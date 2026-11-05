@@ -1,0 +1,54 @@
+name: Import v0.20 snapshot
+on:
+  push:
+    paths: ['snapshot/**']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  import:
+    if: github.event.head_commit.message != 'Import complete v0.20 snapshot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reassemble and verify current-version ZIP
+        id: archive
+        shell: python
+        run: |
+          import os, pathlib, hashlib, zipfile
+          parts = sorted(pathlib.Path('snapshot').glob('JX3-v0.20.zip.*'))
+          if not parts:
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f: f.write('present=false\n')
+          else:
+              assert len(parts) == 100, 'Incomplete snapshot'
+              target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'JX3-v0.20.zip'
+              with target.open('wb') as f:
+                  for part in parts: f.write(part.read_bytes())
+              assert target.stat().st_size == 69973770
+              assert hashlib.sha256(target.read_bytes()).hexdigest() == 'b00b30d9aaaf9a8d3c07a3f9e78f4264e1bc7a6f565eedf63e719958dc466f90'
+              root = pathlib.Path.cwd().resolve()
+              with zipfile.ZipFile(target) as archive:
+                  for item in archive.infolist():
+                      assert (root / item.filename).resolve().is_relative_to(root)
+                      assert '.git' not in pathlib.PurePosixPath(item.filename).parts
+                  archive.extractall(root)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f: f.write('present=true\n')
+      - name: Publish normal source tree and version tag
+        if: steps.archive.outputs.present == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r snapshot
+          git add -A
+          git commit -m 'Import complete v0.20 snapshot'
+          git tag v0.20
+          git push origin HEAD:main refs/tags/v0.20
+      - name: Publish full ZIP as release asset
+        if: steps.archive.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.20 "$RUNNER_TEMP/JX3-v0.20.zip" --verify-tag --title 'v0.20 完整版本' --notes 'Includes source, model, icons, runtime dependencies and requirements/handoff docs. Personal configurations and full screenshots are excluded.'
+
